@@ -1,0 +1,40 @@
+# --- Python Backend ---
+__pycache__/
+*.py[cod]
+*.class
+backend/venv/
+backend/.venv/
+backend/env/
+backend/*.log
+backend/app.db
+backend/out.log
+backend/uwsgi.log
+
+# --- Node/Next.js Frontend ---
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.DS_Store
+frontend/*.log
+frontend/package-lock.json   # (可选：如果有 yarn.lock 可以忽略这个，通常建议保留锁文件)
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# --- System / General ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Project Specific ---
+.env
+cache/
+run_states/
+openreview_data_analysis/cache/
+openreview_data_analysis/outputs/
+openreview_data_analysis/run_states/
+openreview_data_analysis/__pycache__/
