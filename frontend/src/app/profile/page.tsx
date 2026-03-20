@@ -47,12 +47,14 @@ export default function ProfilePage() {
 
       const responseNeedsReview = Boolean(res.data?.needs_review);
       const nextDatasetStatus = typeof res.data?.dataset_status === 'string' ? res.data.dataset_status : undefined;
-      let refreshedItems: any[] | null = null;
+      let refreshedItems: any[] = [];
+      let hasRefreshedItems = false;
 
       // 始终刷新一次，避免因响应模型裁剪导致前端拿不到 needs_review 字段而状态滞后。
       if (user?.username) {
         const refreshRes = await api.get(`/datasets?owner=${user.username}&limit=100`);
-        refreshedItems = refreshRes.data.items || [];
+        refreshedItems = Array.isArray(refreshRes.data?.items) ? refreshRes.data.items : [];
+        hasRefreshedItems = true;
         setDatasets(refreshedItems);
       } else {
         setDatasets((prev) => prev.map((item: any) => 
@@ -67,7 +69,7 @@ export default function ProfilePage() {
         ));
       }
 
-      const refreshedTarget = Array.isArray(refreshedItems)
+      const refreshedTarget = hasRefreshedItems
         ? refreshedItems.find((item: any) => item.id === ds.id)
         : null;
       const inferredNeedsReview = Boolean(
@@ -148,7 +150,7 @@ export default function ProfilePage() {
     const fetchMyDatasets = async () => {
       try {
         const res = await api.get(`/datasets?owner=${user.username}&limit=100`);
-        setDatasets(res.data.items || []);
+        setDatasets(Array.isArray(res.data?.items) ? res.data.items : []);
       } catch (err) { console.error(err); }
       finally { setLoading(false); }
     };

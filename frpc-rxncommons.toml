@@ -1,0 +1,9 @@
+serverAddr = "haihe.luoszgroup.com"
+serverPort = 2201
+
+[[proxies]]
+name = "rxncommons-frontend"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 3000
+remotePort = 2233

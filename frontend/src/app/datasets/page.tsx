@@ -3,10 +3,17 @@ import { useEffect, useState } from 'react';
 import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import api from '@/lib/api';
+import api, { getCoverImageUrl } from '@/lib/api';
+import CoverImageCard from '@/components/CoverImageCard';
 import { useAuth } from '@/context/AuthContext';
-import { Filter, Database, FlaskConical, Download, Eye, ThumbsUp, UserRound, Clock3 } from 'lucide-react';
+import { Filter, Database, FlaskConical, Download, Eye, ThumbsUp } from 'lucide-react';
 import { SOURCE_TYPE_OPTIONS, normalizeSourceTypeCode } from '@/lib/dataset-meta';
+
+function truncateText(text: string | null | undefined, maxLength: number) {
+  const normalized = String(text || '').trim();
+  if (!normalized) return '暂无描述';
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
 
 function DatasetsPageContent() {
   const { user } = useAuth();
@@ -223,46 +230,61 @@ function DatasetsPageContent() {
 
             <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-6">
             {datasets.map((ds: any) => (
+              (() => {
+                const briefDescription = truncateText(ds.description, 36);
+                const hasCoverImage = Boolean(ds.cover_image_key);
+                const totalRows = Number(ds.total_rows ?? ds.row_count ?? 0);
+                const content = (
+                  <div className={`flex h-full flex-col justify-between ${hasCoverImage ? 'py-0.5 sm:py-1' : 'p-5 sm:p-6'}`}>
+                    <div>
+                      <h2 className="mb-2 line-clamp-2 text-lg font-semibold text-slate-900 transition-colors hover:text-primary">
+                        {ds.title}
+                      </h2>
+                      <p className="min-h-[1.5rem] text-sm leading-6 text-slate-600">
+                        {briefDescription}
+                      </p>
+                    </div>
+                    <div className="mt-4">
+                      <div className="grid grid-cols-4 gap-2 text-[11px] sm:text-xs">
+                        <span className="inline-flex min-w-0 items-center justify-center gap-1 rounded-full bg-slate-100/90 px-2 py-1.5 text-slate-700">
+                          <FlaskConical className="h-3.5 w-3.5" />
+                          <span className="truncate">{totalRows.toLocaleString()}</span>
+                        </span>
+                        <span className="inline-flex min-w-0 items-center justify-center gap-1 rounded-full bg-slate-100/90 px-2 py-1.5 text-slate-700">
+                          <ThumbsUp className="h-3.5 w-3.5" />
+                          <span className="truncate">{Number(ds.upvote_count || 0)}</span>
+                        </span>
+                        <span className="inline-flex min-w-0 items-center justify-center gap-1 rounded-full bg-slate-100/90 px-2 py-1.5 text-slate-700">
+                          <Download className="h-3.5 w-3.5" />
+                          <span className="truncate">{Number(ds.download_count || 0)}</span>
+                        </span>
+                        <span className="inline-flex min-w-0 items-center justify-center gap-1 rounded-full bg-slate-100/90 px-2 py-1.5 text-slate-700">
+                          <Eye className="h-3.5 w-3.5" />
+                          <span className="truncate">{Number(ds.view_count || 0)}</span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+
+                return (
               <Link key={ds.id} href={`/datasets/${ds.id}`}
-                    className="bg-white border border-gray-200 rounded-lg hover:border-gray-300 hover:shadow-md transition-shadow p-5 flex flex-col">
-                <h2 className="text-lg font-semibold text-gray-900 mb-1 line-clamp-2 hover:text-primary">
-                  {ds.title}
-                </h2>
-                <p className="text-[#333333] text-sm mb-3 line-clamp-2 flex-grow">{ds.description}</p>
-                <div className="mt-auto border-t border-gray-100 pt-3 space-y-2 text-xs text-[#666666]">
-                  <div className="grid grid-cols-3 gap-2 text-[11px]">
-                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700 min-w-0">
-                      <UserRound className="h-3 w-3 shrink-0" />
-                      <span className="truncate">{ds.owner?.username ?? '—'}</span>
-                    </span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700 min-w-0">
-                      <Clock3 className="h-3 w-3 shrink-0" />
-                      <span className="truncate">{new Date(ds.created_at).toLocaleDateString()}</span>
-                    </span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700 min-w-0">
-                      <span className="truncate mono-data text-[11px]">{ds.license || '—'}</span>
-                    </span>
+                    className="overflow-hidden rounded-[1.35rem] border border-slate-200/90 bg-white/95 shadow-[0_18px_40px_-38px_rgba(15,23,42,0.26)] transition-all hover:border-slate-300 hover:shadow-[0_24px_52px_-38px_rgba(15,23,42,0.32)]">
+                {hasCoverImage ? (
+                  <div className="flex h-full flex-col gap-2.5 p-4 sm:flex-row sm:items-center sm:gap-3 sm:p-[1.125rem]">
+                    <div className="sm:w-[118px] sm:shrink-0">
+                      <CoverImageCard
+                        src={getCoverImageUrl(ds.id, ds.cover_image_key)}
+                        alt={`${ds.title} cover image`}
+                        variant="list"
+                      />
+                    </div>
+                    {content}
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700">
-                    <FlaskConical className="h-3.5 w-3.5" />
-                    条目 {(ds.total_rows || 0).toLocaleString()}
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700">
-                    <ThumbsUp className="h-3.5 w-3.5" />
-                    {Number(ds.upvote_count || 0)}
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700">
-                    <Download className="h-3.5 w-3.5" />
-                    {Number(ds.download_count || 0)}
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700">
-                    <Eye className="h-3.5 w-3.5" />
-                    {Number(ds.view_count || 0)}
-                  </span>
-                  </div>
-                </div>
+                ) : content}
               </Link>
+                );
+              })()
             ))}
             {datasets.length === 0 && (
               <div className="col-span-full text-center py-10 text-[#666666]">没有找到匹配的数据集。</div>

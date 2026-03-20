@@ -18,7 +18,7 @@ from uuid import UUID
 import os
 import tempfile
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from fastapi.responses import StreamingResponse
 from urllib.parse import quote
@@ -36,11 +36,11 @@ class PreviewResponse(BaseModel):
 
 class FileColumnUpdate(BaseModel):
     column_name: str
-    description: str
+    description: str = Field(..., max_length=500)
 
 
 class FileMetadataUpdateReq(BaseModel):
-    description: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=500)
     columns: List[FileColumnUpdate] = []
 
 

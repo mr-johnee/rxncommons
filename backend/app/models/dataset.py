@@ -25,6 +25,7 @@ class Dataset(Base):
     view_count = Column(Integer, default=0)
     download_count = Column(Integer, default=0)
     upvote_count = Column(Integer, default=0)
+    cover_image_key = Column(String(500))
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime)

@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import api from '@/lib/api';
+import api, { getCoverImageUrl } from '@/lib/api';
+import CoverImageCard from '@/components/CoverImageCard';
 import { useAuth } from '@/context/AuthContext';
 import { getSourceTypeLabel } from '@/lib/dataset-meta';
 import {
@@ -56,6 +57,7 @@ interface ReviewDetail {
     source_ref?: string;
     license?: string;
     status_reason?: string;
+    cover_image_key?: string;
   };
   version: {
     version_num: number | null;
@@ -216,7 +218,7 @@ export default function AdminReviewDetailPage() {
 
   const handleDownloadAll = () => {
     if (!detail) return;
-    const versionNum = detail.request.requested_version_num || detail.request.version_num || detail.dataset.current_version || 1;
+    const versionNum = detail.request.requested_version_num ?? detail.version.version_num ?? 1;
     const a = document.createElement('a');
     a.href = `/api/datasets/${detail.dataset.id}/versions/${versionNum}/download-all`;
     a.click();
@@ -374,11 +376,21 @@ export default function AdminReviewDetailPage() {
 
         <div className="mt-4 grid grid-cols-1 gap-4">
           <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <h3 className="mb-2 inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
-              <FileText className="h-4 w-4 text-primary" />
-              数据集描述
-            </h3>
-            <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{detail.dataset.description || '暂无描述'}</p>
+            <div className={`grid gap-5 ${detail.dataset.cover_image_key ? 'lg:grid-cols-[minmax(0,1fr)_minmax(380px,0.78fr)] lg:items-start' : ''}`}>
+              <div>
+                <h3 className="mb-2 inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
+                  <FileText className="h-4 w-4 text-primary" />
+                  数据集描述
+                </h3>
+                <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{detail.dataset.description || '暂无描述'}</p>
+              </div>
+              {detail.dataset.cover_image_key && (
+                <CoverImageCard
+                  src={getCoverImageUrl(detail.dataset.id, detail.dataset.cover_image_key)}
+                  alt={`${detail.dataset.title} cover image`}
+                />
+              )}
+            </div>
           </div>
           <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
             <h3 className="mb-2 inline-flex items-center gap-2 text-sm font-semibold text-primary">

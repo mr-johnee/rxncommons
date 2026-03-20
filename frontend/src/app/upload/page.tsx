@@ -2,9 +2,10 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import api from '@/lib/api';
+import api, { getCoverImageUrl } from '@/lib/api';
 import { LICENSE_OPTIONS, SOURCE_TYPE_OPTIONS, normalizeSourceTypeCode } from '@/lib/dataset-meta';
 const TASK_TAG_PRESETS = ['yield_prediction', 'condition_prediction', 'retrosynthesis', 'forward_prediction', 'reaction_classification'];
+const META_TEXT_LIMIT = 500;
 
 type VersionFile = {
   id: string;
@@ -144,6 +145,14 @@ function UploadPageContent() {
   const [confirmDialog, setConfirmDialog] = useState<{ msg: string; onConfirm: () => void; onCancel: () => void } | null>(null);
   const isNewlyCreatedRef = useRef(false);
 
+  // Cover image state
+  const [coverImageFile, setCoverImageFile] = useState<File | null>(null);
+  const [coverImagePreview, setCoverImagePreview] = useState<string>('');
+  const [coverImageUploading, setCoverImageUploading] = useState(false);
+  const [existingCoverImageKey, setExistingCoverImageKey] = useState<string | null>(null);
+  const [coverImageMarkedForDeletion, setCoverImageMarkedForDeletion] = useState(false);
+  const coverImageObjectUrlRef = useRef<string | null>(null);
+
   const askConfirm = (msg: string): Promise<boolean> =>
     new Promise(resolve => {
       setConfirmDialog({
@@ -155,6 +164,30 @@ function UploadPageContent() {
   const datasetIdRef = useRef('');
   const newDatasetSlugRef = useRef('');
   const workingVersionNumRef = useRef(targetVersionNum);
+
+  const revokeCoverImageObjectUrl = useCallback(() => {
+    if (coverImageObjectUrlRef.current) {
+      URL.revokeObjectURL(coverImageObjectUrlRef.current);
+      coverImageObjectUrlRef.current = null;
+    }
+  }, []);
+
+  const clearCoverImagePreview = useCallback(() => {
+    revokeCoverImageObjectUrl();
+    setCoverImagePreview('');
+  }, [revokeCoverImageObjectUrl]);
+
+  const setCoverImagePreviewFromFile = useCallback((file: File) => {
+    revokeCoverImageObjectUrl();
+    const nextObjectUrl = URL.createObjectURL(file);
+    coverImageObjectUrlRef.current = nextObjectUrl;
+    setCoverImagePreview(nextObjectUrl);
+  }, [revokeCoverImageObjectUrl]);
+
+  const setCoverImagePreviewFromServer = useCallback((targetDatasetId: string, cacheKey?: string) => {
+    revokeCoverImageObjectUrl();
+    setCoverImagePreview(getCoverImageUrl(targetDatasetId, cacheKey));
+  }, [revokeCoverImageObjectUrl]);
 
   const mapErrorCode = (code: string) => {
     if (code === 'dataset_status_conflict') {
@@ -273,6 +306,50 @@ function UploadPageContent() {
 
     // Reset input so user can select same file again after rename/remove.
     e.target.value = '';
+  };
+
+  const handleCoverImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+
+    if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(f.type)) {
+      alert('仅支持上传 jpg/jpeg/png/gif/webp 格式的图片');
+      return;
+    }
+    if (f.size > 5 * 1024 * 1024) {
+      alert('图片大小不能超过 5 MB');
+      return;
+    }
+
+    setCoverImageFile(f);
+    setCoverImageMarkedForDeletion(false);
+    setCoverImagePreviewFromFile(f);
+  };
+
+  const handleRemoveCoverImage = () => {
+    if (coverImageFile) {
+      setCoverImageFile(null);
+      if (existingCoverImageKey && datasetIdRef.current) {
+        setCoverImageMarkedForDeletion(false);
+        setCoverImagePreviewFromServer(datasetIdRef.current, existingCoverImageKey);
+      } else {
+        clearCoverImagePreview();
+      }
+      return;
+    }
+
+    if (existingCoverImageKey) {
+      setCoverImageMarkedForDeletion(true);
+    }
+    clearCoverImagePreview();
+  };
+
+  const restoreExistingCoverImage = () => {
+    if (!datasetIdRef.current || !existingCoverImageKey) return;
+    setCoverImageMarkedForDeletion(false);
+    setCoverImageFile(null);
+    setCoverImagePreviewFromServer(datasetIdRef.current, existingCoverImageKey);
   };
 
   const removeFile = (idx: number) => setFiles(prev => prev.filter((_, i) => i !== idx));
@@ -396,6 +473,7 @@ function UploadPageContent() {
   // Keep refs in sync
   useEffect(() => { datasetIdRef.current = datasetId; }, [datasetId]);
   useEffect(() => { workingVersionNumRef.current = workingVersionNum; }, [workingVersionNum]);
+  useEffect(() => () => revokeCoverImageObjectUrl(), [revokeCoverImageObjectUrl]);
 
   // Slug conflict detection: debounce check if title-derived slug is already taken
   // Only checks published/archived datasets — drafts do NOT block a slug.
@@ -492,6 +570,16 @@ function UploadPageContent() {
         setLicense(ds.license || 'CC BY 4.0');
         setSourceType(ds.source_type ? ds.source_type.split(',').map((s: string) => normalizeSourceTypeCode(s.trim()) || s.trim()).filter(Boolean) : ['lab']);
         setSourceRef(ds.source_ref || '');
+        setCoverImageFile(null);
+        setCoverImageUploading(false);
+        setCoverImageMarkedForDeletion(false);
+        if (ds.cover_image_key) {
+          setExistingCoverImageKey(ds.cover_image_key);
+          setCoverImagePreviewFromServer(ds.id, ds.cover_image_key);
+        } else {
+          setExistingCoverImageKey(null);
+          clearCoverImagePreview();
+        }
         try {
           const policyRes = await api.get(`/datasets/${ds.id}/access-policy`);
           const level = policyRes.data?.access_level === 'password_protected' ? 'password_protected' : 'public';
@@ -583,7 +671,7 @@ function UploadPageContent() {
       }
     };
     initEditMode();
-  }, [editDatasetId, user, targetVersionNum, mode, loadVersionFilesSnapshot, applyVersionFilesSnapshot]);
+  }, [editDatasetId, user, targetVersionNum, mode, loadVersionFilesSnapshot, applyVersionFilesSnapshot, clearCoverImagePreview, setCoverImagePreviewFromServer]);
 
   const handleClearDraft = () => {
     if (!datasetId || uploading) return;
@@ -699,16 +787,16 @@ function UploadPageContent() {
   }
 
   if (initLoading) {
-    return <div className="text-center py-20 text-gray-500">正在加载草稿...</div>;
+    return <div className="py-20 text-center text-slate-500">正在加载草稿...</div>;
   }
 
   // Step 0: Confirmation dialog
   if (step === 0) {
     const canContinue = confirmSmilesChecked && confirmColumnNamingChecked;
     return (
-      <div className="max-w-xl mx-auto mt-10 bg-white p-8 rounded-lg border border-gray-200 hover:shadow-md hover:border-gray-300 transition">
+      <div className="mx-auto mt-10 max-w-xl rounded-[1.25rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.94),rgba(255,255,255,0.98))] p-8 shadow-[0_18px_40px_-38px_rgba(15,23,42,0.34)]">
         <h2 className="text-xl font-bold mb-4">上传前请确认</h2>
-        <div className="space-y-3 mb-6 text-sm text-gray-700">
+        <div className="mb-6 space-y-3 text-sm text-slate-700">
           <label className="flex items-start gap-3 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -718,7 +806,7 @@ function UploadPageContent() {
             />
             <span>
               我已对 SMILES 相关列进行了基本标准化，并检查了其有效性
-              <span className="block mt-1 text-xs text-gray-500">
+              <span className="block mt-1 text-xs text-slate-500">
                 例如统一表示形式、排查明显错误值，并确认关键列中的 SMILES 可正常解析。
               </span>
             </span>
@@ -733,14 +821,14 @@ function UploadPageContent() {
             <span>我的列名命名清晰，便于他人理解</span>
           </label>
         </div>
-        <div className="bg-muted/50 p-4 rounded-md mb-6 text-sm text-foreground space-y-2">
-          <p className="font-semibold text-foreground">建议列名参考：</p>
+        <div className="mb-6 space-y-2 rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-700">
+          <p className="font-semibold text-slate-800">建议列名参考：</p>
           <div className="flex flex-wrap gap-2">
             {[
               'reactants', 'products', 'solvent', 'catalyst', 'ligand', 'base', 
               'yield_pct', 'temperature_c', 'reaction_smiles', 'reagent'
             ].map(name => (
-              <span key={name} className="inline-flex items-center rounded-md border border-border bg-background px-2 py-0.5 text-xs font-mono font-medium text-foreground">
+              <span key={name} className="inline-flex items-center rounded-md border border-slate-200 bg-white/85 px-2 py-0.5 text-xs font-mono font-medium text-slate-700">
                 {name}
               </span>
             ))}
@@ -749,7 +837,7 @@ function UploadPageContent() {
         <div className="flex justify-end gap-3">
           <button 
             onClick={() => confirmLeave('/profile')} 
-            className="rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-muted hover:text-accent-foreground"
+            className="rounded-xl border border-slate-200 bg-white/85 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-800"
           >
             取消
           </button>
@@ -777,7 +865,7 @@ function UploadPageContent() {
             className={`inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-colors ${
               canContinue
                 ? 'bg-primary text-primary-foreground shadow hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
-                : 'bg-muted text-muted-foreground cursor-not-allowed'
+                : 'cursor-not-allowed bg-slate-200 text-slate-500'
             }`}
           >
             确认并继续上传
@@ -787,10 +875,10 @@ function UploadPageContent() {
         {/* Draft picker overlay */}
         {showDraftPicker && existingDrafts.length > 0 && (
           <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[80vh] flex flex-col">
-              <div className="p-6 border-b">
-                <h3 className="text-lg font-bold text-gray-900">检测到已有草稿</h3>
-                <p className="text-sm text-gray-500 mt-1">
+            <div className="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-[1.25rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(255,255,255,0.98))] shadow-xl">
+              <div className="border-b border-slate-200 p-6">
+                <h3 className="text-lg font-bold text-slate-900">检测到已有草稿</h3>
+                <p className="mt-1 text-sm text-slate-500">
                   您有 {existingDrafts.length} 个草稿数据集。可以继续编辑已有草稿，或创建全新数据集。
                 </p>
               </div>
@@ -804,19 +892,19 @@ function UploadPageContent() {
                       const modeQ = draft.has_published_version ? '&mode=new-version' : '';
                       router.push(`/upload?datasetId=${draft.id}&versionNum=${vNum}${modeQ}`);
                     }}
-                    className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-primary hover:bg-primary/5 transition-colors group"
+                    className="group w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
                   >
-                    <div className="font-medium text-sm text-gray-900 group-hover:text-primary">{draft.title}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">
+                    <div className="text-sm font-medium text-slate-900 group-hover:text-primary">{draft.title}</div>
+                    <div className="mt-0.5 text-xs text-slate-500">
                       {draft.owner?.username}/{draft.slug} · 创建于 {new Date(draft.created_at).toLocaleString('zh-CN')}
                     </div>
                   </button>
                 ))}
               </div>
-              <div className="p-4 border-t flex justify-between">
+              <div className="flex justify-between border-t border-slate-200 p-4">
                 <button
                   onClick={() => { setShowDraftPicker(false); }}
-                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900"
+                  className="px-4 py-2 text-sm text-slate-600 transition hover:text-slate-900"
                 >
                   返回
                 </button>
@@ -1046,6 +1134,43 @@ function UploadPageContent() {
     }
   };
 
+  const syncCoverImage = async (targetDatasetId: string) => {
+    if (coverImageFile) {
+      setCoverImageUploading(true);
+      try {
+        const formData = new FormData();
+        formData.append('file', coverImageFile);
+        const uploadRes = await api.post(`/datasets/by-id/${targetDatasetId}/cover-image`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        const nextCoverKey = String(uploadRes.data?.cover_image_key || '').trim() || null;
+        setExistingCoverImageKey(nextCoverKey);
+        setCoverImageMarkedForDeletion(false);
+        setCoverImageFile(null);
+        if (nextCoverKey) {
+          setCoverImagePreviewFromServer(targetDatasetId, nextCoverKey);
+        } else {
+          clearCoverImagePreview();
+        }
+      } finally {
+        setCoverImageUploading(false);
+      }
+      return;
+    }
+
+    if (coverImageMarkedForDeletion && existingCoverImageKey) {
+      setCoverImageUploading(true);
+      try {
+        await api.delete(`/datasets/by-id/${targetDatasetId}/cover-image`);
+        setExistingCoverImageKey(null);
+        setCoverImageMarkedForDeletion(false);
+        clearCoverImagePreview();
+      } finally {
+        setCoverImageUploading(false);
+      }
+    }
+  };
+
   const handleSubmitInfo = async (action: 'draft' | 'review') => {
     // 隐藏掉原本强校验“自己输密码”的逻辑，改为静默由后台或固定方案处理
     // 以实现只选权限，不用写密码顺滑体验
@@ -1101,6 +1226,15 @@ function UploadPageContent() {
       await persistAllFileMetadata();
 
       await saveDatasetMeta();
+      const targetDatasetId = datasetIdRef.current;
+      if (!targetDatasetId) {
+        throw new Error('数据集 ID 丢失，请刷新页面后重试');
+      }
+      if (coverImageFile || (coverImageMarkedForDeletion && existingCoverImageKey)) {
+        setMessage(coverImageFile ? '正在上传封面图...' : '正在删除封面图...');
+        await syncCoverImage(targetDatasetId);
+      }
+
       const policyResult = await saveAccessPolicy();
       await syncTags();
 
@@ -1140,14 +1274,17 @@ function UploadPageContent() {
     ? `/datasets/${encodeURIComponent(user.username)}/${previewSlug}`
     : '';
   const canEnterInfoStep = step === 2 || files.length > 0 || versionFiles.length > 0;
+  const paperPanelClass = 'rounded-[1.25rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.94),rgba(255,255,255,0.98))] shadow-[0_18px_40px_-38px_rgba(15,23,42,0.34)]';
+  const softInputClass = 'mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/75 px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 transition focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/15';
+  const softPlainInputClass = 'w-full rounded-xl border border-slate-200 bg-slate-50/75 px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 transition focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/15';
 
   return (
-    <div className="max-w-3xl mx-auto bg-white p-8 rounded-lg border border-gray-200 hover:shadow-md hover:border-gray-300 transition">
+    <div className={`mx-auto max-w-3xl p-8 ${paperPanelClass}`}>
       <h1 className="text-2xl font-bold mb-6">
         {mode === 'new-version' ? '新增版本（草稿）' : editDatasetId ? '编辑草稿数据集' : '上传数据集'}
       </h1>
       {mode === 'new-version' && (
-        <p className="text-sm text-muted-foreground mb-6 -mt-4">
+        <p className="-mt-4 mb-6 text-sm text-slate-500">
           当前为未发布草稿，{accessLevel === 'password_protected' ? '保存后' : '审核通过后'}{targetReleaseVersionNum ? `将发布为 V${targetReleaseVersionNum}` : '将生成正式版本号'}。
         </p>
       )}
@@ -1174,7 +1311,7 @@ function UploadPageContent() {
         <button
           type="button"
           onClick={() => setStep(1)}
-          className={`flex-1 text-center font-semibold transition-colors ${step === 1 ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}
+          className={`flex-1 text-center font-semibold transition-colors ${step === 1 ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
         >
           步骤 1/2：上传文件
         </button>
@@ -1182,7 +1319,7 @@ function UploadPageContent() {
           type="button"
           onClick={() => canEnterInfoStep && setStep(2)}
           disabled={!canEnterInfoStep}
-          className={`flex-1 text-center font-semibold transition-colors ${step === 2 ? 'text-blue-600' : 'text-gray-400'} ${canEnterInfoStep ? 'hover:text-gray-600' : 'cursor-not-allowed opacity-60'}`}
+          className={`flex-1 text-center font-semibold transition-colors ${step === 2 ? 'text-blue-600' : 'text-slate-400'} ${canEnterInfoStep ? 'hover:text-slate-600' : 'cursor-not-allowed opacity-60'}`}
         >
           步骤 2/2：填写信息
         </button>
@@ -1194,13 +1331,13 @@ function UploadPageContent() {
             <div className="absolute inset-0 z-10 bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center rounded-lg border border-primary/20 shadow-sm">
                 <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent mb-4"></div>
                 <p className="text-lg font-semibold text-primary">正在解析文件内容...</p>
-                <p className="text-sm text-muted-foreground mt-2 max-w-sm text-center">系统正在自动提取列名并生成预览数据。<br/>通常只需数秒到几十秒，请保持页面开启。</p>
+                <p className="mt-2 max-w-sm text-center text-sm text-slate-500">系统正在自动提取列名并生成预览数据。<br/>通常只需数秒到几十秒，请保持页面开启。</p>
             </div>
           )}
           {versionFiles.length > 0 && (
-            <div className="border border-border rounded-lg p-4 bg-card">
+            <div className="rounded-[1.1rem] border border-slate-200 bg-slate-50/85 p-4">
               <div className="flex items-center justify-between mb-2">
-                <h3 className="font-medium text-foreground">当前版本文件</h3>
+                <h3 className="font-medium text-slate-800">当前版本文件</h3>
                 <button
                   onClick={handleClearDraft}
                   disabled={uploading || (workingVersionStatus !== '' && workingVersionStatus !== 'draft')}
@@ -1211,8 +1348,8 @@ function UploadPageContent() {
               </div>
               <div className="space-y-2">
                 {versionFiles.map((f: any) => (
-                  <div key={f.id} className="flex items-center justify-between bg-muted/50 p-3 rounded">
-                    <span className="text-sm text-foreground">📄 {f.filename} <span className="text-muted-foreground font-mono ml-2">{((f.file_size || 0) / 1024 / 1024).toFixed(2)} MB</span></span>
+                  <div key={f.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white/80 p-3">
+                    <span className="text-sm text-slate-700">📄 {f.filename} <span className="ml-2 font-mono text-slate-400">{((f.file_size || 0) / 1024 / 1024).toFixed(2)} MB</span></span>
                     <button
                       onClick={() => deleteVersionFile(f.id)}
                       disabled={deletingFileId === f.id || (workingVersionStatus !== '' && workingVersionStatus !== 'draft')}
@@ -1227,10 +1364,10 @@ function UploadPageContent() {
           )}
 
           <div 
-            className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg p-10 text-center transition-colors ${
+            className={`flex flex-col items-center justify-center rounded-[1.2rem] border-2 border-dashed p-10 text-center transition-colors ${
               uploading || (workingVersionStatus !== '' && workingVersionStatus !== 'draft')
-                ? 'border-border bg-muted/50 cursor-not-allowed' 
-                : 'border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/10'
+                ? 'cursor-not-allowed border-slate-200 bg-slate-100/70' 
+                : 'border-slate-300 bg-slate-50/70 hover:border-primary/40 hover:bg-white'
             }`}
           >
             <input
@@ -1251,14 +1388,14 @@ function UploadPageContent() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                 </svg>
               </div>
-              <span className="text-lg font-medium text-foreground">
+              <span className="text-lg font-medium text-slate-800">
                 {uploading 
                   ? '上传处理中...' 
                   : workingVersionStatus && workingVersionStatus !== 'draft' 
                     ? `不可上传 (${workingVersionStatus})` 
                     : '点击或拖拽上传文件 (支持CSV/XLSX)'}
               </span>
-              <span className="text-sm text-muted-foreground mt-1">
+              <span className="mt-1 text-sm text-slate-500">
                 {workingVersionStatus && workingVersionStatus !== 'draft' 
                   ? '请点击右上角"创建新版本"后再进行上传' 
                   : '支持拖拽上传，单文件最大2GB，压缩文件需提前解压'}
@@ -1268,10 +1405,10 @@ function UploadPageContent() {
 
           {files.length > 0 && (
             <div>
-              <h3 className="font-medium mb-2">已选文件：</h3>
+              <h3 className="mb-2 font-medium text-slate-800">已选文件：</h3>
               {files.map((f, i) => (
-                <div key={i} className="flex items-center justify-between bg-muted/50 p-3 rounded-md mb-2">
-                  <span className="text-sm">📊 {f.name} <span className="text-muted-foreground">({(f.size / 1024 / 1024).toFixed(2)} MB)</span></span>
+                <div key={i} className="mb-2 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/75 p-3">
+                  <span className="text-sm text-slate-700">📊 {f.name} <span className="text-slate-400">({(f.size / 1024 / 1024).toFixed(2)} MB)</span></span>
                   <button onClick={() => removeFile(i)} className="text-destructive text-sm hover:underline">移除</button>
                 </div>
               ))}
@@ -1283,7 +1420,7 @@ function UploadPageContent() {
           <div className="flex justify-end">
             <button onClick={handleUploadFiles} disabled={(files.length === 0 && versionFiles.length === 0) || uploading || (workingVersionStatus !== '' && workingVersionStatus !== 'draft')}
                     className={`px-6 py-2 rounded-md font-medium text-primary-foreground transition-colors ${
-                      (files.length === 0 && versionFiles.length === 0) || uploading || (workingVersionStatus !== '' && workingVersionStatus !== 'draft') ? 'bg-muted cursor-not-allowed text-muted-foreground' : 'bg-primary shadow hover:bg-primary/90'
+                      (files.length === 0 && versionFiles.length === 0) || uploading || (workingVersionStatus !== '' && workingVersionStatus !== 'draft') ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-primary shadow hover:bg-primary/90'
                     }`}>
               {uploading ? '上传中...' : files.length === 0 ? '下一步，填写信息 →' : '上传并下一步 →'}
             </button>
@@ -1302,19 +1439,19 @@ function UploadPageContent() {
               ← 返回步骤1：上传/管理文件
             </button>
           </div>
-          <div className="bg-blue-50/50 p-4 rounded-md text-sm text-foreground border border-blue-100">
+          <div className="rounded-xl border border-slate-200 bg-slate-50/85 p-4 text-sm text-slate-700">
             <span className="font-semibold text-primary mr-2">文件已上传：</span>
             {(uploadedFiles.length > 0 ? uploadedFiles : versionFiles.map((f) => f.filename)).join(', ') || '暂无'}
-             <span className="ml-2 text-muted-foreground">请完善以下信息。</span>
+             <span className="ml-2 text-slate-500">请完善以下信息。</span>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">数据集标题 *</label>
+            <label className="block text-sm font-medium text-slate-700">数据集标题 *</label>
             <input type="text" required value={title} onChange={e => setTitle(e.target.value)}
-                   className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition" />
+                   className={softInputClass} />
             {previewDatasetPath && (
-              <p className="mt-2 text-xs text-gray-500 break-all">
-                数据集链接预览：<span className="text-gray-700 mono-data">{previewDatasetPath}</span>
+              <p className="mt-2 break-all text-xs text-slate-500">
+                数据集链接预览：<span className="mono-data text-slate-700">{previewDatasetPath}</span>
                 {slugConflict && (
                   <span className="ml-2 text-amber-600">⚠ 此链接已被占用，建议修改标题避免自动追加后缀</span>
                 )}
@@ -1322,23 +1459,26 @@ function UploadPageContent() {
             )}
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700">数据集描述 *（至少10字）</label>
+            <label className="block text-sm font-medium text-slate-700">数据集描述 *（至少10字，最多500字）</label>
             <textarea required value={description} onChange={e => setDescription(e.target.value)}
-                      className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white h-32 resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition" placeholder="请详细描述数据集的来源、范围和用途..." />
-            <p className="text-xs text-gray-400 mt-1">已输入 {description.length}/10 字</p>
+                      maxLength={META_TEXT_LIMIT}
+                      className={`${softInputClass} h-32 resize-none`} placeholder="请详细描述数据集的来源、范围和用途..." />
+            <p className="mt-1 text-xs text-slate-400">已输入 {description.length}/{META_TEXT_LIMIT} 字，至少 10 字</p>
           </div>
           <div>
-              <label className="block text-sm font-medium text-gray-700">
+              <label className="block text-sm font-medium text-slate-700">
               {accessLevel === 'password_protected'
-                ? `版本说明（保存后${targetReleaseVersionNum ? `发布为 V${targetReleaseVersionNum}` : '生成正式版本号'}）*`
-                : `版本说明（审核通过后${targetReleaseVersionNum ? `发布为 V${targetReleaseVersionNum}` : '生成正式版本号'}）*`}
+                ? `版本说明（保存后${targetReleaseVersionNum ? `发布为 V${targetReleaseVersionNum}` : '生成正式版本号'}，最多500字）*`
+                : `版本说明（审核通过后${targetReleaseVersionNum ? `发布为 V${targetReleaseVersionNum}` : '生成正式版本号'}，最多500字）*`}
               </label>
-            <input type="text" value={versionNote} onChange={e => setVersionNote(e.target.value)}
+            <textarea value={versionNote} onChange={e => setVersionNote(e.target.value)}
+                   maxLength={META_TEXT_LIMIT}
                    placeholder="如：2024.03-2025.12 从文献与实验记录整理；剔除缺失产率样本"
-                   className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition" />
+                   className={`${softInputClass} h-24 resize-none`} />
+            <p className="mt-1 text-xs text-slate-400">已输入 {versionNote.length}/{META_TEXT_LIMIT} 字</p>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">数据来源类型 *</label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">数据来源类型 *</label>
             <div className="grid grid-cols-4 gap-1.5">
               {SOURCE_TYPE_OPTIONS.map((t) => (
                 <button
@@ -1349,8 +1489,8 @@ function UploadPageContent() {
                   )}
                   className={`px-2 py-1.5 rounded-md border text-xs text-center transition ${
                     sourceType.includes(t.value)
-                      ? 'border-primary/50 bg-primary/10 text-primary font-semibold'
-                      : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                      ? 'border-primary/40 bg-primary/[0.08] text-primary font-semibold'
+                      : 'border-slate-200 bg-slate-50/70 text-slate-700 hover:border-slate-300 hover:bg-white'
                   }`}
                 >
                   {t.label}
@@ -1359,26 +1499,26 @@ function UploadPageContent() {
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">License *</label>
-            <select value={license} onChange={e => setLicense(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition">
+            <label className="mb-2 block text-sm font-medium text-slate-700">License *</label>
+            <select value={license} onChange={e => setLicense(e.target.value)} className={softPlainInputClass}>
               {LICENSE_OPTIONS.map((l) => <option key={l} value={l}>{l}</option>)}
             </select>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">任务类标签 *（至少 1 个）</label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">任务类标签 *（至少 1 个）</label>
             <div className="flex flex-wrap gap-2 mb-2">
               {taskTags.map((tag) => (
-                <span key={tag} className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-secondary text-secondary-foreground text-xs font-medium mono-data border border-border">
+                <span key={tag} className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50/85 px-3 py-1 text-xs font-medium text-slate-700 mono-data">
                   {tag}
-                  <button type="button" onClick={() => removeTaskTag(tag)} className="ml-1 text-muted-foreground hover:text-foreground">×</button>
+                  <button type="button" onClick={() => removeTaskTag(tag)} className="ml-1 text-slate-400 transition hover:text-slate-700">×</button>
                 </span>
               ))}
-              {taskTags.length === 0 && <span className="text-xs text-gray-400">暂未添加</span>}
+              {taskTags.length === 0 && <span className="text-xs text-slate-400">暂未添加</span>}
             </div>
             <div className="flex flex-wrap gap-2 mb-2">
               {TASK_TAG_PRESETS.map((tag) => (
-                <button key={tag} type="button" onClick={() => addTaskTag(tag)} className="px-2 py-1 text-xs rounded-md border bg-white hover:bg-gray-50 mono-data">
+                <button key={tag} type="button" onClick={() => addTaskTag(tag)} className="rounded-md border border-slate-200 bg-slate-50/70 px-2 py-1 text-xs text-slate-700 transition hover:bg-white mono-data">
                   + {tag}
                 </button>
               ))}
@@ -1395,24 +1535,106 @@ function UploadPageContent() {
                   }
                 }}
                 placeholder="自定义任务类标签（如 reaction_yield_benchmark）"
-                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition"
+                className={`flex-1 ${softPlainInputClass}`}
               />
-              <button type="button" className="px-3 py-2 text-sm border rounded hover:bg-gray-50" onClick={() => {
+              <button type="button" className="rounded-xl border border-slate-200 bg-white/85 px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-50 hover:text-slate-800" onClick={() => {
                 addTaskTag(customTagInput);
                 setCustomTagInput('');
               }}>添加</button>
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700">来源链接/DOI（建议填写）</label>
+            <label className="block text-sm font-medium text-slate-700">来源链接/DOI（建议填写）</label>
             <input type="text" value={sourceRef} onChange={e => setSourceRef(e.target.value)}
+                   maxLength={META_TEXT_LIMIT}
                    placeholder="如：10.1021/jacs.xxxxxxx"
-                   className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition" />
+                   className={softInputClass} />
+            <p className="mt-1 text-xs text-slate-400">最多 {META_TEXT_LIMIT} 字</p>
           </div>
 
-          <div className="border rounded-lg p-4 bg-gray-50">
-            <h3 className="font-semibold text-gray-900 mb-3">文件信息（提交审核前必填）</h3>
-            {versionFiles.length === 0 && <div className="text-sm text-gray-500">暂无文件，请返回上一步上传。</div>}
+          {/* Cover Image (ToC image) */}
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">封面图</label>
+            <p className="mb-2 text-xs text-slate-400">上传一张展示该数据集主体内容样式的图片，支持 jpg/png/gif/webp（≤5MB）</p>
+            <input
+              id="cover-image-upload"
+              type="file"
+              accept="image/jpeg,image/png,image/gif,image/webp"
+              className="hidden"
+              onChange={handleCoverImageChange}
+              disabled={submitting || coverImageUploading}
+            />
+            {coverImagePreview ? (
+              <div className="space-y-3">
+                <div className="relative inline-block">
+                  <img
+                    src={coverImagePreview}
+                    alt="封面图预览"
+                    className="max-h-48 rounded-xl border border-slate-200 bg-slate-50/75 object-contain p-2"
+                  />
+                  {coverImageUploading && (
+                    <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-white/70 text-xs text-slate-600">
+                      处理中...
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <label
+                    htmlFor={submitting || coverImageUploading ? undefined : 'cover-image-upload'}
+                    className={`inline-flex items-center rounded-md border px-3 py-1.5 text-sm transition ${
+                      submitting || coverImageUploading
+                        ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+                        : 'cursor-pointer border-slate-200 bg-white/85 text-slate-700 hover:border-primary/40 hover:text-primary'
+                    }`}
+                  >
+                    更换图片
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleRemoveCoverImage}
+                    disabled={submitting || coverImageUploading}
+                    className="inline-flex items-center rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-sm text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    移除图片
+                  </button>
+                </div>
+                <p className="text-xs text-slate-400">
+                  {coverImageFile ? '新的封面图将在保存后替换当前图片。' : '当前封面图已保存，可继续更换或移除。'}
+                </p>
+              </div>
+            ) : (
+              <label
+                htmlFor={submitting || coverImageUploading ? undefined : 'cover-image-upload'}
+                className={`flex h-32 w-full flex-col items-center justify-center rounded-[1.1rem] border-2 border-dashed transition ${
+                  submitting || coverImageUploading
+                    ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+                    : 'cursor-pointer border-slate-300 bg-slate-50/75 hover:border-primary/40 hover:bg-white'
+                }`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="mb-1 h-8 w-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span className="text-sm text-slate-500">点击上传封面图</span>
+              </label>
+            )}
+            {coverImageMarkedForDeletion && existingCoverImageKey && !coverImageFile && (
+              <div className="mt-2 flex flex-wrap items-center gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                <span>当前封面图已标记为删除，点击保存后才会真正生效。</span>
+                <button
+                  type="button"
+                  onClick={restoreExistingCoverImage}
+                  disabled={submitting || coverImageUploading}
+                  className="font-medium underline decoration-amber-400 underline-offset-2 disabled:no-underline disabled:opacity-60"
+                >
+                  恢复当前封面图
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-[1.15rem] border border-slate-200 bg-slate-50/85 p-4">
+            <h3 className="mb-3 font-semibold text-slate-900">文件信息（提交审核前必填）</h3>
+            {versionFiles.length === 0 && <div className="text-sm text-slate-500">暂无文件，请返回上一步上传。</div>}
             <div className="space-y-4">
               {versionFiles.map((f) => {
                 const draft = fileMetaDraft[f.id] || { description: '', columns: [], upload_status: f.upload_status, row_count: f.row_count, error_message: f.error_message };
@@ -1438,11 +1660,11 @@ function UploadPageContent() {
                   ? draft.columns.map((column) => column.column_name)
                   : previewColumns;
                 return (
-                  <div key={f.id} className="border bg-white rounded-lg p-3">
+                  <div key={f.id} className="rounded-[1rem] border border-slate-200 bg-white/85 p-3 shadow-[0_16px_36px_-34px_rgba(15,23,42,0.22)]">
                     <div className="flex items-center justify-between mb-2">
                       <div>
-                        <div className="font-medium text-sm text-gray-900 break-all">{f.filename}</div>
-                        <div className="mt-1 text-xs text-gray-500">
+                        <div className="break-all text-sm font-medium text-slate-900">{f.filename}</div>
+                        <div className="mt-1 text-xs text-slate-500">
                           {typeof draft.row_count === 'number' ? `${draft.row_count.toLocaleString()} 行数据` : '正在统计行数'}
                           {recognizedColumns.length > 0 ? ` · ${recognizedColumns.length} 列` : ''}
                         </div>
@@ -1452,28 +1674,28 @@ function UploadPageContent() {
                       </span>
                     </div>
 
-                    <div className="mb-3 overflow-hidden rounded-md border border-gray-200 bg-gray-50">
-                      <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 text-xs text-gray-600">
+                    <div className="mb-3 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/75">
+                      <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2 text-xs text-slate-600">
                         <span>文件预览</span>
                         {preview?.truncated ? <span>仅展示前 5 行</span> : null}
                       </div>
                       {preview?.preview_type === 'table' && previewColumns.length > 0 ? (
                         <div className="overflow-x-auto">
-                          <table className="min-w-full divide-y divide-gray-200 text-xs">
-                            <thead className="bg-white">
+                          <table className="min-w-full divide-y divide-slate-200 text-xs">
+                            <thead className="bg-white/80">
                               <tr>
                                 {previewColumns.map((columnName) => (
-                                  <th key={`${f.id}-${columnName}`} className="whitespace-nowrap px-3 py-2 text-left font-medium text-gray-600">
+                                  <th key={`${f.id}-${columnName}`} className="whitespace-nowrap px-3 py-2 text-left font-medium text-slate-600">
                                     {columnName}
                                   </th>
                                 ))}
                               </tr>
                             </thead>
-                            <tbody className="divide-y divide-gray-100 bg-white">
+                            <tbody className="divide-y divide-slate-100 bg-white/90">
                               {previewRows.map((row, rowIndex) => (
                                 <tr key={`${f.id}-row-${rowIndex}`}>
                                   {previewColumns.map((columnName) => (
-                                    <td key={`${f.id}-${columnName}-${rowIndex}`} className="max-w-[180px] px-3 py-2 align-top text-gray-700">
+                                    <td key={`${f.id}-${columnName}-${rowIndex}`} className="max-w-[180px] px-3 py-2 align-top text-slate-700">
                                       <div className="truncate">{String(row?.[columnName] ?? '') || '-'}</div>
                                     </td>
                                   ))}
@@ -1483,11 +1705,11 @@ function UploadPageContent() {
                           </table>
                         </div>
                       ) : uploadStatus === 'pending' ? (
-                        <div className="px-3 py-3 text-xs text-gray-500">正在读取样例数据和列名，页面会自动刷新。</div>
+                        <div className="px-3 py-3 text-xs text-slate-500">正在读取样例数据和列名，页面会自动刷新。</div>
                       ) : preview?.error ? (
                         <div className="px-3 py-3 text-xs text-red-600">{preview.error}</div>
                       ) : (
-                        <div className="px-3 py-3 text-xs text-gray-500">
+                        <div className="px-3 py-3 text-xs text-slate-500">
                           {preview?.preview_type === 'text'
                             ? (previewRows.map((row) => String(row?.content ?? '')).join('\n') || '文件内容为空。')
                             : '暂未获取到样例数据。'}
@@ -1495,21 +1717,23 @@ function UploadPageContent() {
                       )}
                     </div>
 
-                    <label className="block text-xs font-medium text-gray-600 mb-1">文件描述 *</label>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">文件描述 *（最多500字）</label>
                     <textarea
                       value={draft.description}
                       onChange={(e) => setFileMetaDraft((prev) => ({
                         ...prev,
                         [f.id]: { ...draft, description: e.target.value }
                       }))}
+                      maxLength={META_TEXT_LIMIT}
                       onBlur={() => persistAllFileMetadata()}
-                      className="w-full border rounded p-2 text-sm h-20 mb-3"
+                      className="mb-3 h-20 w-full rounded-xl border border-slate-200 bg-slate-50/75 p-2 text-sm text-slate-700 placeholder:text-slate-400 transition focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/15"
                       placeholder="说明该文件包含的数据内容、来源与用途..."
                     />
+                    <div className="mb-3 text-right text-[11px] text-slate-400">{draft.description.length}/{META_TEXT_LIMIT}</div>
 
                     <div>
                       <div className="flex items-center justify-between mb-2">
-                        <div className="text-xs font-medium text-gray-600">列说明 *</div>
+                        <div className="text-xs font-medium text-slate-600">列说明 *（每项最多500字）</div>
                         <button
                           onClick={() => autofillColumnDescriptions(f.id)}
                           className="text-xs text-blue-600 hover:underline"
@@ -1521,7 +1745,7 @@ function UploadPageContent() {
                       <div className="space-y-2 max-h-56 overflow-auto pr-1">
                         {draft.columns.map((c, idx) => (
                           <div key={`${f.id}-${c.column_name}`} className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                            <div className="text-xs text-gray-700 bg-gray-100 rounded px-2 py-2 break-all">{c.column_name}</div>
+                            <div className="break-all rounded-xl border border-slate-200 bg-slate-50/80 px-2 py-2 text-xs text-slate-700">{c.column_name}</div>
                             <input
                               value={c.description}
                               onChange={(e) => {
@@ -1532,18 +1756,19 @@ function UploadPageContent() {
                                   [f.id]: { ...draft, columns: nextCols }
                                 }));
                               }}
+                              maxLength={META_TEXT_LIMIT}
                               onBlur={() => persistAllFileMetadata()}
-                              className="md:col-span-2 border rounded px-2 py-2 text-xs"
+                              className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50/75 px-2 py-2 text-xs text-slate-700 placeholder:text-slate-400 transition focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/15"
                               placeholder="请填写该列含义与单位..."
                             />
                           </div>
                         ))}
                         {draft.columns.length === 0 && previewColumns.length > 0 && (
-                          <div className="rounded-md border border-dashed border-gray-200 bg-gray-50 px-3 py-3 text-xs text-gray-600">
+                          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/75 px-3 py-3 text-xs text-slate-600">
                             <div className="mb-2">已识别到以下列名，正在同步为可编辑列说明：</div>
                             <div className="flex flex-wrap gap-2">
                               {previewColumns.map((columnName) => (
-                                <span key={`${f.id}-preview-${columnName}`} className="rounded-md bg-white px-2 py-1 text-gray-700 border border-gray-200">
+                                <span key={`${f.id}-preview-${columnName}`} className="rounded-md border border-slate-200 bg-white/85 px-2 py-1 text-slate-700">
                                   {columnName}
                                 </span>
                               ))}
@@ -1551,13 +1776,13 @@ function UploadPageContent() {
                           </div>
                         )}
                         {draft.columns.length === 0 && previewColumns.length === 0 && uploadStatus === 'pending' && (
-                          <div className="text-xs text-gray-400">列信息正在生成，页面会自动刷新。</div>
+                          <div className="text-xs text-slate-400">列信息正在生成，页面会自动刷新。</div>
                         )}
                         {draft.columns.length === 0 && uploadStatus === 'error' && (
                           <div className="text-xs text-red-600">列信息读取失败：{draft.error_message || '请重新上传或稍后重试。'}</div>
                         )}
                         {draft.columns.length === 0 && previewColumns.length === 0 && uploadStatus === 'ready' && !draft.error_message && (
-                          <div className="text-xs text-gray-400">暂未读取到列信息，请稍后重试。</div>
+                          <div className="text-xs text-slate-400">暂未读取到列信息，请稍后重试。</div>
                         )}
                       </div>
                     </div>
@@ -1570,8 +1795,8 @@ function UploadPageContent() {
 
           {message && <div className="text-blue-600 text-sm font-medium">{message}</div>}
 
-          <div className="border rounded-lg p-4 bg-amber-50/50 mt-4 mb-2">
-            <label className="block text-sm font-semibold text-gray-800 mb-2">设置访问权限 *</label>
+          <div className="mt-4 mb-2 rounded-[1.1rem] border border-slate-200 bg-slate-50/85 p-4">
+            <label className="mb-2 block text-sm font-semibold text-slate-800">设置访问权限 *</label>
             {initialAccessLevel === 'password_protected' && accessLevel === 'public' && (
               <div className="mb-3 flex items-start gap-2 rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1580,7 +1805,7 @@ function UploadPageContent() {
                 <span>您正在将数据集从<strong>私有</strong>切换为<strong>公开</strong>。保存后将提交管理员审核，审核期间数据集仍保持私有状态。审核通过后所有已发布版本将可被所有用户搜索和下载。</span>
               </div>
             )}
-            <div className="space-y-2 text-sm text-gray-700">
+            <div className="space-y-2 text-sm text-slate-700">
               <label className="flex items-start gap-2 cursor-pointer">
                 <input
                   type="radio"
@@ -1606,14 +1831,14 @@ function UploadPageContent() {
             {/* 保留旧版的状态兼容以防接口未通。这里不强制要输入密码了，改为后台自动分配Token或默认填一个。为了平滑过渡现隐藏原先繁琐的自己想密码的流程，改为自动。但这块稍后需要配后端Token接口 */}
           </div>
 
-          <div className="flex justify-between items-center pt-4 border-t border-border">
+          <div className="flex items-center justify-between border-t border-slate-200 pt-4">
             <button onClick={() => confirmLeave('/profile')} disabled={submitting}
                     className="px-4 py-2 text-sm text-red-600 border border-red-200 rounded hover:bg-red-50 font-medium transition-colors">
               放弃并离开
             </button>
             <div className="flex gap-3">
               <button onClick={() => handleSubmitInfo('draft')} disabled={submitting}
-                      className="px-6 py-2 border border-input rounded hover:bg-accent hover:text-accent-foreground font-medium transition-colors">
+                      className="rounded-xl border border-slate-200 bg-white/85 px-6 py-2 font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-800">
                 保存草稿
               </button>
               <button onClick={() => handleSubmitInfo('review')} disabled={submitting || workingVersionStatus === 'pending_review' || workingVersionStatus === 'published'}
@@ -1627,9 +1852,9 @@ function UploadPageContent() {
 
       {showClearDraftConfirm && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-6">
-            <h3 className="text-lg font-bold text-gray-900">确认清空草稿</h3>
-            <p className="text-sm text-gray-600 mt-2">
+          <div className="w-full max-w-sm rounded-[1.2rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(255,255,255,0.98))] p-6 shadow-xl">
+            <h3 className="text-lg font-bold text-slate-900">确认清空草稿</h3>
+            <p className="mt-2 text-sm text-slate-600">
               清空当前版本（V{workingVersionNum}）的草稿文件？
             </p>
             <p className="text-xs text-red-600 mt-1">此操作不可恢复。</p>
@@ -1637,7 +1862,7 @@ function UploadPageContent() {
               <button
                 type="button"
                 onClick={() => setShowClearDraftConfirm(false)}
-                className="px-4 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
+                className="rounded-xl border border-slate-200 bg-white/85 px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-50"
               >
                 取消
               </button>
@@ -1656,12 +1881,12 @@ function UploadPageContent() {
       {/* 通用确认对话框 */}
       {confirmDialog && (
         <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6">
-            <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{confirmDialog.msg}</p>
+          <div className="w-full max-w-sm rounded-[1.2rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(255,255,255,0.98))] p-6 shadow-2xl">
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{confirmDialog.msg}</p>
             <div className="flex justify-end gap-3 mt-5">
               <button
                 onClick={confirmDialog.onCancel}
-                className="px-4 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
+                className="rounded-xl border border-slate-200 bg-white/85 px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-50"
               >
                 取消
               </button>
@@ -1681,7 +1906,7 @@ function UploadPageContent() {
 
 export default function UploadPage() {
   return (
-    <Suspense fallback={<div className="text-center py-20 text-gray-500">加载中...</div>}>
+    <Suspense fallback={<div className="py-20 text-center text-slate-500">加载中...</div>}>
       <UploadPageContent />
     </Suspense>
   );

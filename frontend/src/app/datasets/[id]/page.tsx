@@ -2,8 +2,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import api from '@/lib/api';
-import { FlaskConical, Download, Eye, ArrowDownToLine, FileText, Columns3, FileSearch, LayoutPanelTop, UserRound, CalendarClock, ThumbsUp, Share2, Copy, Check, X, RefreshCw, KeyRound, ChevronDown } from 'lucide-react';
+import api, { getCoverImageUrl } from '@/lib/api';
+import CoverImageCard from '@/components/CoverImageCard';
+import { FlaskConical, Download, Eye, ArrowDownToLine, FileText, Columns3, FileSearch, LayoutPanelTop, UserRound, CalendarClock, ThumbsUp, Share2, Copy, Check, X, RefreshCw, KeyRound, ChevronDown, Link2, ShieldCheck } from 'lucide-react';
 import { getSourceTypeLabel, parseSourceTypes } from '@/lib/dataset-meta';
 
 export default function DatasetDetailPage() {
@@ -280,6 +281,22 @@ export default function DatasetDetailPage() {
     fetchFileMeta();
   }, [id, selectedFileId, reloadNonce]);
 
+  useEffect(() => {
+    if (!showShareModal) return;
+    const prevOverflow = document.body.style.overflow;
+    const handleEscClose = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowShareModal(false);
+      }
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleEscClose);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', handleEscClose);
+    };
+  }, [showShareModal]);
+
   const ensureLoggedInForDownload = () => {
     if (dataset?.is_password_protected) return true;
 
@@ -515,24 +532,19 @@ export default function DatasetDetailPage() {
           const newToken = Math.random().toString(36).substring(2, 8).toLowerCase();
           setSharePassword(newToken);
           const directUrl = `${shareUrl}?share_token=${newToken}`;
-          text = `我在 RxnCommons 分享了私密数据集「${dataset.title}」\n点击专属邀请链接，免密直达访问：\n👉 ${directUrl}`;
+          text = directUrl;
           
           updateTokenPromise = api.put(`/datasets/${id}/access-policy`, {
             access_level: 'password_protected',
             access_password: newToken
           }, withDatasetAccess()).catch(() => {});
         } else {
-          // 只复制基础链接（如果没有输入或者就是不想生成新的）
           const effectiveToken = sharePassword.trim() || dataset.access_password;
           const currentTokenUrlSnippet = effectiveToken ? `?share_token=${effectiveToken}` : '';
-          if (currentTokenUrlSnippet) {
-            text = `我在 RxnCommons 分享了私密数据集「${dataset.title}」\n点击专属邀请链接，免密直达访问：\n👉 ${shareUrl}${currentTokenUrlSnippet}`;
-          } else {
-            text = `我在 RxnCommons 分享了私密数据集「${dataset.title}」\n👉 基础链接：${shareUrl} \n(需手动输入有效访问口令)`;
-          }
+          text = `${shareUrl}${currentTokenUrlSnippet}`;
         }
       } else {
-        text = `我在 RxnCommons 分享了公开数据集「${dataset.title}」\n👉 访问链接：${shareUrl}`;
+        text = shareUrl;
       }
 
       const safelyWriteClipboard = async (content: string) => {
@@ -583,6 +595,17 @@ export default function DatasetDetailPage() {
       alert('无法获取剪贴板权限或环境受限，请在下方文本框中手动全选并复制。');
     }
   };
+
+  const shareBaseUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/datasets/${encodeURIComponent(dataset.owner?.username || '')}/${dataset.slug}`;
+  const shareToken = sharePassword.trim() || dataset.access_password || '';
+  const currentShareUrl = dataset.is_password_protected && shareToken
+    ? `${shareBaseUrl}?share_token=${shareToken}`
+    : shareBaseUrl;
+  const shareUrlLabel = !dataset.is_password_protected
+    ? '公开访问链接'
+    : shareToken
+      ? '免密专属链接'
+      : '基础链接（需手动输入口令）';
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4">
@@ -721,14 +744,24 @@ export default function DatasetDetailPage() {
             }`}>#{t.tag}</span>
           ))}
         </div>
-        <div className="mb-5 rounded-xl border border-slate-200 bg-white/80 p-4">
-          <h2 className="mb-2 inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
-            <FileText className="h-4 w-4 text-primary" />
-            数据集描述
-          </h2>
-          <p className="whitespace-pre-wrap text-sm leading-7 text-slate-700">
-            {dataset.description || '暂无描述'}
-          </p>
+        <div className="mb-5 rounded-xl border border-slate-200 bg-white/80 p-4 sm:p-5">
+          <div className={`grid gap-6 ${dataset.cover_image_key ? 'lg:grid-cols-[minmax(0,1fr)_minmax(380px,0.76fr)] lg:items-start' : ''}`}>
+            <div>
+              <h2 className="mb-2 inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
+                <FileText className="h-4 w-4 text-primary" />
+                数据集描述
+              </h2>
+              <p className="max-w-3xl whitespace-pre-wrap text-sm leading-7 text-slate-700">
+                {dataset.description || '暂无描述'}
+              </p>
+            </div>
+            {dataset.cover_image_key && (
+              <CoverImageCard
+                src={getCoverImageUrl(dataset.id, dataset.cover_image_key)}
+                alt={`${dataset.title} cover image`}
+              />
+            )}
+          </div>
         </div>
       </div>
 
@@ -993,100 +1026,150 @@ export default function DatasetDetailPage() {
       {/* Share Modal */}
       {showShareModal && (
         <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4"
           onClick={() => setShowShareModal(false)}
         >
           <div 
-            className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+            className="relative w-full max-w-2xl overflow-hidden rounded-3xl border border-slate-200/80 bg-white shadow-[0_28px_70px_-28px_rgba(15,118,110,0.45)] animate-in fade-in zoom-in-95 duration-200"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-slate-50/50">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-primary/10 rounded-lg">
+            <div className="pointer-events-none absolute -left-16 -top-14 h-44 w-44 rounded-full bg-primary/10 blur-2xl" />
+            <div className="pointer-events-none absolute -bottom-20 -right-12 h-52 w-52 rounded-full bg-emerald-200/30 blur-2xl" />
+
+            <div className="relative px-6 py-6 sm:px-7 border-b border-slate-100 flex items-start justify-between bg-gradient-to-br from-teal-50 via-white to-emerald-50/60">
+              <div className="flex items-start gap-3.5 min-w-0 pr-3">
+                <div className="mt-0.5 p-2.5 bg-white/90 border border-primary/20 rounded-xl shadow-sm">
                   <Share2 className="h-5 w-5 text-primary" />
                 </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">分享数据集</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">{dataset.title}</p>
+                <div className="min-w-0">
+                  <h3 className="text-lg font-semibold text-slate-900">分享数据集</h3>
+                  <p className="text-xs text-slate-600 mt-1">生成可传播链接，发送给协作者即可访问此数据集</p>
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                      dataset.is_password_protected
+                        ? 'bg-amber-100 text-amber-800'
+                        : 'bg-emerald-100 text-emerald-700'
+                    }`}>
+                      {dataset.is_password_protected ? '私密访问' : '公开访问'}
+                    </span>
+                    <span className="text-xs text-slate-500 truncate max-w-[20rem]">{dataset.title}</span>
+                  </div>
                 </div>
               </div>
               <button 
                 onClick={() => setShowShareModal(false)}
-                className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 p-2 rounded-full transition-colors"
+                className="shrink-0 text-slate-400 hover:text-slate-700 hover:bg-slate-100 p-2 rounded-full transition-colors"
                 aria-label="关闭"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
             
-            <div className="p-6 space-y-6 overflow-hidden">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {!dataset.is_password_protected 
-                    ? '公开直达链接' 
-                    : (dataset.access_password || sharePassword.trim()) 
-                      ? '免密专属链接' 
-                      : '基础链接 (需对方手动输入口令)'}
-                </label>
-                <div className="flex items-stretch max-w-full">
-                  <div className={`bg-gray-50 flex-1 p-3 text-sm text-gray-600 break-all border border-gray-200 select-all font-mono ${dataset.is_password_protected ? 'rounded-lg' : 'rounded-l-lg border-r-0'}`}>
-                    {typeof window !== 'undefined' ? window.location.origin : ''}/datasets/{encodeURIComponent(dataset.owner?.username || '')}/{dataset.slug}
-                    {(dataset.is_password_protected && (dataset.access_password || sharePassword.trim())) 
-                      ? `?share_token=${sharePassword.trim() || dataset.access_password}`
-                      : ''}
+            <div className="relative p-6 sm:p-7 space-y-5 overflow-hidden">
+              <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50/80 p-4 sm:p-5">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <Link2 className="h-4.5 w-4.5" />
                   </div>
-                  {!dataset.is_password_protected && (
-                    <button
-                      onClick={() => handleCopyShare('top_copy')}
-                      className="px-4 py-3 min-h-[46px] border border-gray-200 border-l-0 rounded-r-lg bg-white hover:bg-gray-50 text-gray-700 font-medium text-sm transition-colors flex items-center shrink-0"
-                      title="复制上方链接"
-                    >
-                      {copiedAction === 'top_copy' ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
-                    </button>
-                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-slate-900">{shareUrlLabel}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {dataset.is_password_protected
+                        ? '开启专属口令后，该链接可免密直达。'
+                        : '公开数据集可直接访问，无需额外口令。'}
+                    </p>
+                  </div>
                 </div>
+                <div className="mt-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-xs sm:text-sm text-slate-700 break-all select-all mono-data">
+                  {currentShareUrl}
+                </div>
+                <button
+                  onClick={() => handleCopyShare('top_copy')}
+                  className={`mt-3 w-full rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors inline-flex items-center justify-center gap-2 ${
+                    copiedAction === 'top_copy'
+                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                  title="复制当前链接"
+                >
+                  {copiedAction === 'top_copy'
+                    ? <Check className="h-4 w-4" />
+                    : <Copy className="h-4 w-4" />
+                  }
+                  {copiedAction === 'top_copy' ? '链接已复制' : '复制当前链接'}
+                </button>
               </div>
 
-              {dataset.is_password_protected && (
-                <div className="relative overflow-hidden rounded-xl border border-amber-200 bg-gradient-to-br from-amber-50 to-orange-50/30">
-                  <div className="p-5">
-                    <div className="flex items-start gap-3">
-                      <div className="p-1.5 bg-amber-100 rounded-md text-amber-700 mt-0.5 shadow-sm shrink-0">
-                        <KeyRound className="h-4 w-4" />
+              {dataset.is_password_protected ? (
+                <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-orange-50/40 p-4 sm:p-5">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
+                      <KeyRound className="h-4.5 w-4.5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-sm font-semibold text-amber-900">私密分享口令</h4>
+                        {shareToken && (
+                          <span className="inline-flex rounded-md border border-amber-200 bg-white px-2 py-1 text-[11px] font-medium mono-data text-amber-800">
+                            当前口令: {shareToken}
+                          </span>
+                        )}
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between mb-3 gap-2">
-                          <h4 className="text-[15px] font-semibold text-amber-900 truncate">私密数据集专属邀请</h4>
-                          {(dataset.access_password || sharePassword.trim()) && (
-                            <div className="px-2.5 py-1 bg-white border border-amber-200 rounded text-xs font-mono text-amber-700 shadow-sm shrink-0">
-                              当前口令: {sharePassword.trim() || dataset.access_password}
-                            </div>
-                          )}
-                        </div>
-                        <p className="text-[13px] leading-relaxed text-amber-800/80 mb-4">
-                          通过专属链接，访客可免密直接访问此数据集。重新生成将使旧口令失效。
-                        </p>
-                        <div className="flex flex-col sm:flex-row gap-3">
-                          <button 
-                            onClick={() => handleCopyShare('generate')}
-                            className="flex-1 px-4 py-2.5 text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 active:bg-amber-800 rounded-lg transition-all flex items-center justify-center gap-2 shadow-md"
-                          >
-                            {copiedAction === 'generate' ? <Check className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />}
-                            {copiedAction === 'generate' ? '已生成并复制！' : '生成新口令'}
-                          </button>
-                          <button 
-                            onClick={() => handleCopyShare('bottom_copy')}
-                            className="flex-1 px-4 py-2.5 text-sm font-medium bg-amber-600/10 text-amber-800 border border-amber-600/20 hover:bg-amber-600/20 rounded-lg transition-all flex items-center justify-center gap-2"
-                          >
-                            {copiedAction === 'bottom_copy' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                            {copiedAction === 'bottom_copy' ? '链接已复制！' : '复制专属链接'}
-                          </button>
-                        </div>
-                      </div>
+                      <p className="mt-1 text-xs leading-5 text-amber-800/80">
+                        重新生成后，旧口令会立即失效。请确认通知协作者使用新链接。
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-2.5 sm:grid-cols-2">
+                    <button 
+                      onClick={() => handleCopyShare('generate')}
+                      className={`rounded-lg px-4 py-2.5 text-sm font-medium text-white transition-colors inline-flex items-center justify-center gap-2 ${
+                        copiedAction === 'generate'
+                          ? 'bg-emerald-600 hover:bg-emerald-700'
+                          : 'bg-amber-600 hover:bg-amber-700'
+                      }`}
+                    >
+                      {copiedAction === 'generate'
+                        ? <Check className="h-4 w-4" />
+                        : <RefreshCw className="h-4 w-4" />
+                      }
+                      {copiedAction === 'generate' ? '新口令已生成并复制' : '生成新口令并复制'}
+                    </button>
+                    <button 
+                      onClick={() => handleCopyShare('bottom_copy')}
+                      className={`rounded-lg px-4 py-2.5 text-sm font-medium border transition-colors inline-flex items-center justify-center gap-2 ${
+                        copiedAction === 'bottom_copy'
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                          : 'border-amber-300 bg-white/80 text-amber-900 hover:bg-amber-100/70'
+                      }`}
+                    >
+                      {copiedAction === 'bottom_copy'
+                        ? <Check className="h-4 w-4" />
+                        : <Copy className="h-4 w-4" />
+                      }
+                      {copiedAction === 'bottom_copy' ? '专属链接已复制' : '复制专属链接'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+                      <ShieldCheck className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-emerald-900">公开数据集，访问更顺畅</p>
+                      <p className="mt-1 text-xs text-emerald-800/80">
+                        分享该链接即可直接访问。若后续切换为私密模式，公开链接将不再可用。
+                      </p>
                     </div>
                   </div>
                 </div>
               )}
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-500">
+                提示：使用“生成新口令并复制”后，建议立即把新链接发送给目标协作者，避免旧链接继续传播。
+              </div>
             </div>
           </div>
         </div>

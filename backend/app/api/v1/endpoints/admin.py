@@ -429,6 +429,7 @@ def get_review_request_detail(
             "source_ref": dataset.source_ref,
             "license": dataset.license,
             "status_reason": dataset.status_reason,
+            "cover_image_key": dataset.cover_image_key,
         },
         "version": {
             "version_num": target_version_num,

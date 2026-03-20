@@ -1,18 +1,22 @@
 from uuid import UUID
 import uuid
 import re
+import hashlib
+import io
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from app.api import deps
+from app.core.storage import minio_client
 from app.crud import crud_dataset
 from app.schemas.dataset import DatasetCreate, DatasetResponse, DatasetUpdate
 from app.schemas.dataset import DatasetListResponse
 from app.models.user import User
-from app.models.dataset import Dataset, DatasetFile, FileColumn, DatasetTag
+from app.models.dataset import Dataset, DatasetFile, DatasetVersion, FileColumn, DatasetTag
 from app.models.system import HomeFeaturedDataset
 from app.models.dataset_access import (
     ACCESS_LEVEL_PASSWORD_PROTECTED,
@@ -64,10 +68,10 @@ def create_dataset(
     attach_access_level(dataset, None)
     return dataset
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 class ReviewSubmitReq(BaseModel):
     version_num: int
-    version_note: str | None = None
+    version_note: str | None = Field(None, max_length=500)
 
 
 class DatasetAccessPolicyResp(BaseModel):
@@ -617,6 +621,43 @@ def get_featured_datasets(
             if len(items) >= limit:
                 break
 
+    if items:
+        dataset_ids = [item.id for item in items]
+        latest_published_subq = (
+            db.query(
+                DatasetVersion.dataset_id.label("dataset_id"),
+                func.max(DatasetVersion.version_num).label("version_num"),
+            )
+            .filter(
+                DatasetVersion.dataset_id.in_(dataset_ids),
+                DatasetVersion.status == "published",
+            )
+            .group_by(DatasetVersion.dataset_id)
+            .subquery()
+        )
+
+        rows_agg = (
+            db.query(
+                DatasetVersion.dataset_id,
+                func.coalesce(func.sum(DatasetFile.row_count), 0).label("total_rows"),
+            )
+            .join(
+                latest_published_subq,
+                and_(
+                    DatasetVersion.dataset_id == latest_published_subq.c.dataset_id,
+                    DatasetVersion.version_num == latest_published_subq.c.version_num,
+                ),
+            )
+            .outerjoin(DatasetFile, DatasetFile.version_id == DatasetVersion.id)
+            .group_by(DatasetVersion.dataset_id)
+            .all()
+        )
+        rows_map = {row.dataset_id: int(row.total_rows or 0) for row in rows_agg}
+
+        for item in items:
+            setattr(item, "total_rows", rows_map.get(item.id, 0))
+            setattr(item, "has_published_version", True)
+
     return {"items": items, "total": len(items)}
 
 
@@ -941,3 +982,118 @@ def update_dataset_by_id(
     is_owner_or_admin = bool(current_user and (current_user.role == "admin" or current_user.id == dataset.owner_id))
     attach_access_level(dataset, get_dataset_access_policy(db, dataset.id), include_password=is_owner_or_admin)
     return dataset
+
+
+ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB
+
+IMAGE_CONTENT_TYPES = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+}
+
+
+@router.post("/by-id/{dataset_id}/cover-image")
+def upload_cover_image(
+    dataset_id: UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    dataset = crud_dataset.get_dataset(db, dataset_id)
+    if not dataset or dataset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    if dataset.owner_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    import os
+    ext = os.path.splitext(file.filename or '')[1].lower()
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=422, detail="仅支持 jpg/jpeg/png/gif/webp 格式的图片")
+
+    data = file.file.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="图片内容为空")
+    if len(data) > MAX_IMAGE_SIZE:
+        raise HTTPException(status_code=422, detail="图片大小不能超过 5 MB")
+
+    file_hash = hashlib.sha256(data).hexdigest()[:16]
+    object_key = f"covers/{dataset_id}_{file_hash}{ext}"
+    content_type = IMAGE_CONTENT_TYPES.get(ext, 'application/octet-stream')
+
+    minio_client.put_object(
+        "rxncommons-bucket",
+        object_key,
+        io.BytesIO(data),
+        length=len(data),
+        content_type=content_type,
+    )
+
+    # 如果旧的 cover_image_key 存在且不同，尝试删除旧对象
+    old_key = dataset.cover_image_key
+    if old_key and old_key != object_key:
+        try:
+            minio_client.remove_object("rxncommons-bucket", old_key)
+        except Exception:
+            pass
+
+    dataset.cover_image_key = object_key
+    db.commit()
+    return {"status": "success", "cover_image_key": object_key}
+
+
+@router.get("/by-id/{dataset_id}/cover-image")
+def get_cover_image(
+    dataset_id: UUID,
+    db: Session = Depends(deps.get_db),
+):
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id, Dataset.deleted_at.is_(None)).first()
+    if not dataset or not dataset.cover_image_key:
+        raise HTTPException(status_code=404, detail="No cover image")
+
+    import os
+    ext = os.path.splitext(dataset.cover_image_key)[1].lower()
+    content_type = IMAGE_CONTENT_TYPES.get(ext, 'application/octet-stream')
+
+    try:
+        response = minio_client.get_object("rxncommons-bucket", dataset.cover_image_key)
+        def stream_cover_image():
+            try:
+                yield from response.stream(32 * 1024)
+            finally:
+                response.close()
+                response.release_conn()
+
+        return StreamingResponse(
+            stream_cover_image(),
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    except Exception:
+        raise HTTPException(status_code=404, detail="Cover image not found in storage")
+
+
+@router.delete("/by-id/{dataset_id}/cover-image")
+def delete_cover_image(
+    dataset_id: UUID,
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    dataset = crud_dataset.get_dataset(db, dataset_id)
+    if not dataset or dataset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    if dataset.owner_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if not dataset.cover_image_key:
+        return {"status": "success"}
+
+    try:
+        minio_client.remove_object("rxncommons-bucket", dataset.cover_image_key)
+    except Exception:
+        pass
+    dataset.cover_image_key = None
+    db.commit()
+    return {"status": "success"}

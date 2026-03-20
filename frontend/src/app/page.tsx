@@ -1,10 +1,17 @@
 'use client';
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
-import api from '@/lib/api';
+import api, { getCoverImageUrl } from '@/lib/api';
+import CoverImageCard from '@/components/CoverImageCard';
 import { useAuth } from '@/context/AuthContext';
-import { Search, ArrowRight, Database, FlaskConical, Users, Sparkles, ThumbsUp, ArrowDownToLine, ChevronsDown, Upload, type LucideIcon } from 'lucide-react';
+import { Search, ArrowRight, Database, FlaskConical, Users, Sparkles, ThumbsUp, ArrowDownToLine, Upload, Eye, type LucideIcon } from 'lucide-react';
 import { parseSourceTypes } from '@/lib/dataset-meta';
+
+function truncateText(text: string | null | undefined, maxLength: number) {
+  const normalized = String(text || '').trim();
+  if (!normalized) return '暂无描述';
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
 
 export default function Home() {
   const { user } = useAuth();
@@ -168,6 +175,69 @@ export default function Home() {
     },
   ];
 
+  const renderFeaturedDatasetCard = (ds: any, compact = false) => {
+    const briefDescription = truncateText(ds.description, 30);
+    const totalRows = Number(ds.total_rows ?? ds.row_count ?? 0);
+
+    return (
+      <article
+        key={ds.id}
+        className={`group flex flex-col rounded-[1.6rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.9))] p-4 shadow-[0_20px_45px_-38px_rgba(15,23,42,0.28)] transition-all hover:-translate-y-1 hover:border-slate-300 hover:shadow-[0_24px_52px_-38px_rgba(15,23,42,0.34)] ${compact ? 'min-h-[236px] min-w-[230px] snap-start' : 'mx-auto min-h-[252px] w-full max-w-[320px]'}`}
+      >
+        <div className="mb-3 flex items-start justify-between gap-2">
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-secondary text-primary">
+            <Sparkles className="h-4 w-4" />
+          </span>
+          <div className="flex flex-wrap justify-end gap-1">
+            {parseSourceTypes(ds.source_type).map(({ code, label, colorClass }) => (
+              <span key={code} className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${colorClass}`}>{label}</span>
+            ))}
+          </div>
+        </div>
+
+        <div className="relative flex-1">
+          <h3 className={`font-semibold leading-6 text-foreground group-hover:text-primary ${compact ? 'text-base' : 'text-lg'}`}>
+            <Link href={`/datasets/${ds.id}`}>
+              <span className="absolute inset-0" />
+              {ds.title}
+            </Link>
+          </h3>
+
+          {ds.cover_image_key ? (
+            <div className="mt-3">
+              <CoverImageCard
+                src={getCoverImageUrl(ds.id, ds.cover_image_key)}
+                alt={`${ds.title} cover image`}
+                variant="featured"
+              />
+            </div>
+          ) : null}
+
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">{briefDescription}</p>
+        </div>
+
+        <div className="mt-4 grid grid-cols-4 gap-2 text-[11px] sm:text-xs">
+          <span className="inline-flex min-w-0 items-center justify-center gap-1 rounded-full bg-slate-100/90 px-2 py-1.5 text-slate-700">
+            <FlaskConical className="h-3.5 w-3.5" />
+            <span className="truncate">{totalRows.toLocaleString()}</span>
+          </span>
+          <span className="inline-flex min-w-0 items-center justify-center gap-1 rounded-full bg-slate-100/90 px-2 py-1.5 text-slate-700">
+            <ThumbsUp className="h-3.5 w-3.5" />
+            <span className="truncate">{Number(ds.upvote_count || 0)}</span>
+          </span>
+          <span className="inline-flex min-w-0 items-center justify-center gap-1 rounded-full bg-slate-100/90 px-2 py-1.5 text-slate-700">
+            <ArrowDownToLine className="h-3.5 w-3.5" />
+            <span className="truncate">{Number(ds.download_count || 0)}</span>
+          </span>
+          <span className="inline-flex min-w-0 items-center justify-center gap-1 rounded-full bg-slate-100/90 px-2 py-1.5 text-slate-700">
+            <Eye className="h-3.5 w-3.5" />
+            <span className="truncate">{Number(ds.view_count || 0)}</span>
+          </span>
+        </div>
+      </article>
+    );
+  };
+
 
 
   return (
@@ -176,7 +246,7 @@ export default function Home() {
       <style dangerouslySetInnerHTML={{ __html: `body { overflow: hidden !important; }` }} />
       {/* Part 1: Brand + Search */}
       <section data-home-section="true" data-section-index="0" onClick={handleSectionClick} className="snap-start snap-always min-h-full border-b border-slate-200 bg-gradient-to-br from-emerald-50 via-white to-slate-50 px-6 py-10 lg:px-8">
-        <div className="mx-auto flex min-h-full max-w-4xl flex-col items-center justify-start pt-[9vh] md:pt-[11vh] text-center">
+        <div className="mx-auto flex min-h-full max-w-4xl flex-col items-center justify-start pt-[14vh] md:pt-[17vh] text-center">
           <h1 className="text-4xl font-bold tracking-tight text-foreground sm:text-6xl">
             化学反应数据开放共享平台
           </h1>
@@ -245,9 +315,11 @@ export default function Home() {
               e.preventDefault();
               document.querySelector('[data-section-index="1"]')?.scrollIntoView({ behavior: 'smooth' });
             }}
-            className="group mt-16 inline-flex h-12 w-12 items-center justify-center rounded-full border border-white/60 bg-white/50 hover:bg-white hover:border-slate-200/80 shadow-sm hover:shadow-md backdrop-blur-md transition-all duration-300 text-slate-400 hover:text-primary active:scale-95"
+            className="group mt-16 inline-flex h-9 w-6 items-start justify-center rounded-[999px] border border-slate-300/80 bg-white/60 pt-1.5 shadow-sm backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-slate-400/90 hover:bg-white/80 hover:shadow-md active:scale-95"
           >
-            <ChevronsDown className="h-5 w-5 animate-bounce pointer-events-none" style={{ animationDuration: '2.5s' }} />
+            <span className="relative flex h-4 w-2 items-start justify-center overflow-hidden rounded-full border border-slate-200/70 bg-white/70">
+              <span className="mt-0.5 h-1.5 w-[3px] rounded-full bg-primary/80 animate-bounce" style={{ animationDuration: '1.8s' }} />
+            </span>
           </button>
         </div>
       </section>
@@ -294,43 +366,7 @@ export default function Home() {
           {featured.length > 0 && (
             <>
               <div className="md:hidden mt-8 -mx-1 flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-1">
-                {featured.map((ds: any) => (
-                  <article key={ds.id} className="group min-w-[220px] snap-start flex min-h-[220px] flex-col rounded-2xl border border-slate-200 bg-card p-4 shadow-sm transition-all hover:-translate-y-1 hover:shadow-lg">
-                    <div className="mb-3 flex items-start justify-between gap-2">
-                      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-secondary text-primary">
-                        <Sparkles className="h-4 w-4" />
-                      </span>
-                      <div className="flex flex-wrap justify-end gap-1">
-                        {parseSourceTypes(ds.source_type).map(({ code, label, colorClass }) => (
-                          <span key={code} className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${colorClass}`}>{label}</span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="relative flex-1">
-                      <h3 className="text-base font-semibold leading-6 text-foreground group-hover:text-primary">
-                        <Link href={`/datasets/${ds.id}`}>
-                          <span className="absolute inset-0" />
-                          {ds.title}
-                        </Link>
-                      </h3>
-                      <p className="mt-3 line-clamp-3 text-sm leading-6 text-muted-foreground">{ds.description}</p>
-                    </div>
-                    <div className="mt-5 grid grid-cols-3 gap-1 text-[11px] text-muted-foreground">
-                      <span className="inline-flex items-center justify-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700 min-w-0">
-                        <FlaskConical className="h-3.5 w-3.5" />
-                        <span className="truncate">{Number(ds.total_rows || 0).toLocaleString()}</span>
-                      </span>
-                      <span className="inline-flex items-center justify-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700">
-                        <ThumbsUp className="h-3.5 w-3.5" />
-                        {Number(ds.upvote_count || 0)}
-                      </span>
-                      <span className="inline-flex items-center justify-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700">
-                        <ArrowDownToLine className="h-3.5 w-3.5" />
-                        {Number(ds.download_count || 0)}
-                      </span>
-                    </div>
-                  </article>
-                ))}
+                {featured.map((ds: any) => renderFeaturedDatasetCard(ds, true))}
                 <Link
                   href="/datasets"
                   className="relative overflow-hidden group min-w-[220px] snap-start flex min-h-[220px] flex-col justify-between rounded-2xl bg-primary/5 border border-primary/20 p-6 shadow-sm transition-all hover:-translate-y-1 hover:shadow-md hover:bg-primary/10"
@@ -353,43 +389,7 @@ export default function Home() {
               </div>
 
               <div className="mt-10 hidden grid-cols-3 gap-5 md:mx-auto md:grid md:max-w-5xl">
-                {featured.map((ds: any) => (
-                  <article key={ds.id} className="group mx-auto flex min-h-[220px] w-full max-w-[320px] flex-col rounded-2xl border border-slate-200 bg-card p-4 shadow-sm transition-all hover:-translate-y-1 hover:shadow-lg">
-                    <div className="mb-3 flex items-start justify-between gap-2">
-                      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-secondary text-primary">
-                        <Sparkles className="h-4 w-4" />
-                      </span>
-                      <div className="flex flex-wrap justify-end gap-1">
-                        {parseSourceTypes(ds.source_type).map(({ code, label, colorClass }) => (
-                          <span key={code} className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${colorClass}`}>{label}</span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="relative flex-1">
-                      <h3 className="text-lg font-semibold leading-6 text-foreground group-hover:text-primary">
-                        <Link href={`/datasets/${ds.id}`}>
-                          <span className="absolute inset-0" />
-                          {ds.title}
-                        </Link>
-                      </h3>
-                      <p className="mt-3 line-clamp-3 text-sm leading-6 text-muted-foreground">{ds.description}</p>
-                    </div>
-                    <div className="mt-5 grid grid-cols-3 gap-1 text-[11px] text-muted-foreground">
-                      <span className="inline-flex items-center justify-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700 min-w-0">
-                        <FlaskConical className="h-3.5 w-3.5" />
-                        <span className="truncate">{Number(ds.total_rows || 0).toLocaleString()}</span>
-                      </span>
-                      <span className="inline-flex items-center justify-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700">
-                        <ThumbsUp className="h-3.5 w-3.5" />
-                        {Number(ds.upvote_count || 0)}
-                      </span>
-                      <span className="inline-flex items-center justify-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-700">
-                        <ArrowDownToLine className="h-3.5 w-3.5" />
-                        {Number(ds.download_count || 0)}
-                      </span>
-                    </div>
-                  </article>
-                ))}
+                {featured.map((ds: any) => renderFeaturedDatasetCard(ds))}
                 <Link
                   href="/datasets"
                   className="relative overflow-hidden group mx-auto flex min-h-[220px] w-full max-w-[320px] flex-col justify-between rounded-2xl bg-primary/5 border border-primary/20 p-6 shadow-sm transition-all hover:-translate-y-1 hover:shadow-md hover:bg-primary/10"

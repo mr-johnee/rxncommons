@@ -11,6 +11,11 @@ const refreshClient = axios.create({
   baseURL: typeof window !== 'undefined' ? '/api' : `${serverApiBase}/api`,
 });
 
+export const getCoverImageUrl = (datasetId: string, coverImageKey?: string | null) => {
+  const versionPart = coverImageKey ? `?v=${encodeURIComponent(coverImageKey)}` : '';
+  return `/api/datasets/by-id/${datasetId}/cover-image${versionPart}`;
+};
+
 // Add a request interceptor
 api.interceptors.request.use(
   (config) => {

@@ -1,14 +1,26 @@
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.models import *
 
+def ensure_schema_compatibility() -> None:
+    """Apply small additive schema patches for existing databases."""
+    compatibility_sql = (
+        "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS cover_image_key VARCHAR(500);",
+        "ALTER TABLE dataset_versions ADD COLUMN IF NOT EXISTS archive_key VARCHAR(500);",
+    )
+    with engine.begin() as connection:
+        for statement in compatibility_sql:
+            connection.execute(text(statement))
+
 def create_app() -> FastAPI:
     # 自动在数据库中创建所有表（生产环境建议使用 Alembic 迁移工具）
     Base.metadata.create_all(bind=engine)
+    ensure_schema_compatibility()
 
     app = FastAPI(
         title=settings.PROJECT_NAME,

@@ -6,9 +6,9 @@ from uuid import UUID
 # Shared properties
 class DatasetBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
-    description: str = ""
+    description: str = Field("", max_length=500)
     source_type: Optional[str] = None
-    source_ref: Optional[str] = None
+    source_ref: Optional[str] = Field(None, max_length=500)
     license: Optional[str] = None
 
 # Properties to receive on dataset creation
@@ -42,6 +42,7 @@ class DatasetResponse(DatasetBase):
     access_level: str = "public"
     is_password_protected: bool = False
     access_password: Optional[str] = None
+    cover_image_key: Optional[str] = None
     latest_editable_version_num: Optional[int] = None
     latest_editable_version_status: Optional[str] = None
     has_published_version: bool = False
@@ -56,7 +57,7 @@ class DatasetListResponse(BaseModel):
 
 class DatasetUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=255)
-    description: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=500)
     source_type: Optional[str] = None
-    source_ref: Optional[str] = None
+    source_ref: Optional[str] = Field(None, max_length=500)
     license: Optional[str] = None
